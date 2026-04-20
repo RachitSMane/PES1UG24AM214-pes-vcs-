@@ -8,14 +8,15 @@
 //
 // Example single entry (conceptual):
 //   "100644 hello.txt\0" followed by 32 raw bytes of SHA-256
-
 #include "tree.h"
+#include "index.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <dirent.h>
 #include <sys/stat.h>
-
+int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out);
+extern int index_load(Index *index) __attribute__((weak));
 // ─── Mode Constants ─────────────────────────────────────────────────────────
 
 #define MODE_FILE      0100644
@@ -129,9 +130,92 @@ int tree_serialize(const Tree *tree, void **data_out, size_t *len_out) {
 //   - object_write    : save that binary buffer to the store as OBJ_TREE
 //
 // Returns 0 on success, -1 on error.
-int tree_from_index(ObjectID *id_out) {
-    // TODO: Implement recursive tree building
-    // (See Lab Appendix for logical steps)
-    (void)id_out;
+// Helper: write one level of the tree (entries sharing the same directory prefix)
+static int write_tree_level(IndexEntry *entries, int count, const char *prefix, ObjectID *id_out) {
+    Tree tree;
+    tree.count = 0;
+
+    int i = 0;
+    while (i < count) {
+        const char *path = entries[i].path;
+
+        // Strip the prefix to get the relative path at this level
+        const char *rel = path;
+        if (prefix && strlen(prefix) > 0) {
+            rel = path + strlen(prefix) + 1; // skip "prefix/"
+        }
+
+        // Check if this entry is in a subdirectory at this level
+        char *slash = strchr(rel, '/');
+
+        if (!slash) {
+            // It's a file at this level — add directly
+            TreeEntry *te = &tree.entries[tree.count++];
+            te->mode = entries[i].mode;
+            te->hash = entries[i].hash;
+            snprintf(te->name, sizeof(te->name), "%.*s", (int)(sizeof(te->name) - 1), rel);
+            i++;
+        } else {
+            // It's inside a subdirectory — collect all entries with same subdir
+            char subdir[256];
+            size_t subdir_len = slash - rel;
+            memcpy(subdir, rel, subdir_len);
+            subdir[subdir_len] = '\0';
+
+            // Build full prefix for this subdir
+            char new_prefix[512];
+            if (prefix && strlen(prefix) > 0)
+                snprintf(new_prefix, sizeof(new_prefix), "%s/%s", prefix, subdir);
+            else
+                snprintf(new_prefix, sizeof(new_prefix), "%s", subdir);
+
+            // Count how many entries belong to this subdir
+            int j = i;
+            while (j < count) {
+                const char *p = entries[j].path;
+                const char *r = p;
+                if (prefix && strlen(prefix) > 0)
+                    r = p + strlen(prefix) + 1;
+                if (strncmp(r, subdir, subdir_len) == 0 && r[subdir_len] == '/')
+                    j++;
+                else
+                    break;
+            }
+
+            // Recurse to build the subtree
+            ObjectID sub_id;
+            if (write_tree_level(entries + i, j - i, new_prefix, &sub_id) != 0)
+                return -1;
+
+            // Add subtree entry
+            TreeEntry *te = &tree.entries[tree.count++];
+            te->mode = 0040000;
+            te->hash = sub_id;
+            snprintf(te->name, sizeof(te->name), "%s", subdir);
+            i = j;
+        }
+    }
+
+    // Serialize and write this tree level
+    void *data;
+    size_t data_len;
+    if (tree_serialize(&tree, &data, &data_len) != 0) return -1;
+    int rc = object_write(OBJ_TREE, data, data_len, id_out);
+    free(data);
+    return rc;
+}
+
+// Weak symbol so test_tree links without index.o
+// When linked with index.o (in pes binary), the real index_load is used
+__attribute__((weak)) int index_load(Index *index) {
+    (void)index;
     return -1;
+}
+
+int tree_from_index(ObjectID *id_out) {
+    Index idx;
+    memset(&idx, 0, sizeof(idx));
+    if (index_load(&idx) != 0) return -1;
+    if (idx.count == 0) return -1;
+    return write_tree_level(idx.entries, idx.count, "", id_out);
 }
