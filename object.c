@@ -159,9 +159,10 @@ int object_read(const ObjectID *id, ObjectType *type_out, void **data_out, size_
 
     // Step 7: Extract data length and copy data
     *len_out = (size_t)atoi((char *)(space + 1));
-    *data_out = malloc(*len_out);
+    *data_out = malloc(*len_out + 1);        // +1 for null terminator
     if (!*data_out) { free(full); return -1; }
     memcpy(*data_out, null_byte + 1, *len_out);
+    ((uint8_t *)*data_out)[*len_out] = '\0'; // null terminate for string safety
 
     free(full);
     return 0;
