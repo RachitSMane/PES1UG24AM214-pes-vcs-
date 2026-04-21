@@ -577,6 +577,18 @@ The following questions cover filesystem concepts beyond the implementation scop
 | GC (analysis-only)        | Q6.1, Q6.2       |
 
 -----------
+                                ANSWERS 
+Q5.1)A branch is stored as a file inside .pes/refs/heads/ containing the latest commit hash. To implement pes checkout <branch>, first update .pes/HEAD so it points to ref: refs/heads/<branch>. Then read the commit hash stored in that branch file, load the commit object, read its tree object, and reconstruct the working directory to match that snapshot. Existing files not present in target tree must be removed, changed files overwritten, and directories created. This operation is complex because local uncommitted changes may be overwritten and nested trees must be restored correctly.
+
+Q5.2)Use the index metadata and working directory metadata. For each tracked file, compare current file mtime and size with values stored in .pes/index. If changed, compute its hash and compare with staged/index hash. Then compare target branch tree hash for that file. If working copy differs from index and target branch also changes that file, checkout must refuse due to conflict.
+
+Q5.3)Detached HEAD means .pes/HEAD stores a commit hash directly instead of a branch reference. New commits can still be created, but no branch name moves forward to reference them. These commits may become unreachable later. Recovery is possible by creating a new branch pointing to that commit hash or manually updating a branch reference file.
+
+Q6.1)Start from all branch heads in .pes/refs/heads/. Traverse every reachable commit, then each commit’s tree, then blobs/subtrees recursively. Store visited hashes in a hash set for O(1) lookup. After traversal, scan .pes/objects/; any object not in reachable set is unreachable and can be deleted. For 100,000 commits and 50 branches, roughly 100,000 commits plus associated trees/blobs must be visited, though many objects are shared.
+
+Q6.2)If garbage collection runs while a commit is being created, new objects may be written to .pes/objects/ but HEAD/reference not yet updated. GC may see those objects as unreachable and delete them before the branch pointer is updated. Then the commit would reference missing objects. Real Git avoids this using locks, temporary refs, grace periods, and running GC only when repository state is stable.
+
+
 
 ## Submission Requirements
 
